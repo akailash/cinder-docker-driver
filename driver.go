@@ -321,6 +321,7 @@ func (d CinderDriver) Mount(r volume.Request) volume.Response {
 		log.Debugf("Volume info: %+v\n", vol)
 		log.Errorf("Invalid volume status for Mount request, volume is: %s but must be available", vol.Status)
 		err := errors.New("Invalid volume status for Mount request")
+		volumeactions.Detach(d.Client, vol.ID, &volumeactions.DetachOpts{})
 		return volume.Response{Err: err.Error()}
 	}
 	volumeactions.Reserve(d.Client, vol.ID)
@@ -338,6 +339,7 @@ func (d CinderDriver) Mount(r volume.Request) volume.Response {
 	}
 	// TODO(ebalduf): Change assumption that we have only one Initiator defined
 	log.Debugf("Value of IPs is=%+v\n", IPs)
+	multipath := false
 	connectorOpts := volumeactions.InitializeConnectionOpts{
 		IP:        d.Conf.InitiatorIP,
 		Host:      hostname,
@@ -346,6 +348,7 @@ func (d CinderDriver) Mount(r volume.Request) volume.Response {
 		Wwnns:     "",
 		Platform:  "x86",
 		OSType:    "linux",
+		Multipath: &multipath,
 	}
 	log.Debug("Issue InitializeConnection...")
 	response := volumeactions.InitializeConnection(d.Client, vol.ID, &connectorOpts)
@@ -353,8 +356,9 @@ func (d CinderDriver) Mount(r volume.Request) volume.Response {
 	data := response.Body.(map[string]interface{})["connection_info"].(map[string]interface{})["data"]
 	var con ConnectorInfo
 	mapstructure.Decode(data, &con)
+	log.Debug(data, con)
 	path, device, err := attachVolume(&con, "default")
-	log.Debug("iSCSI connection done")
+	log.Debug(path, device, err)
 	if path == "" || device == "" && err == nil {
 		log.Error("Missing path or device, but err not set?")
 		log.Debug("Path: ", path, " ,Device: ", device)
@@ -363,8 +367,10 @@ func (d CinderDriver) Mount(r volume.Request) volume.Response {
 	}
 	if err != nil {
 		log.Errorf("Failed to perform iscsi attach of volume %s: %v", r.Name, err)
+		volumeactions.Detach(d.Client, vol.ID, &volumeactions.DetachOpts{})
 		return volume.Response{Err: err.Error()}
 	}
+	log.Debug("iSCSI connection done")
 
 	if GetFSType(device) == "" {
 		//TODO(jdg): Enable selection of *other* fs types
@@ -447,6 +453,7 @@ func (d CinderDriver) Unmount(r volume.Request) volume.Response {
 	// need to get rid of the hard coded Platform/OSType and fix this up for
 	// things like say Windows
 	log.Debugf("IPs=%+v\n", IPs)
+	multipath := false
 	connectorOpts := volumeactions.TerminateConnectionOpts{
 		IP:        d.Conf.InitiatorIP,
 		Host:      hostname,
@@ -455,14 +462,14 @@ func (d CinderDriver) Unmount(r volume.Request) volume.Response {
 		Wwnns:     "",
 		Platform:  "x86",
 		OSType:    "linux",
+		Multipath: &multipath,
 	}
 	log.Debugf("Unreserve volume: %s", vol.ID)
 	volumeactions.Unreserve(d.Client, vol.ID)
 	log.Debugf("Terminate connection for volume: %s", vol.ID)
 	volumeactions.TerminateConnection(d.Client, vol.ID, &connectorOpts)
 	log.Debugf("Detach volume: %s", vol.ID)
-	detachOpts := volumeactions.DetachOpts{}
-	volumeactions.Detach(d.Client, vol.ID, &detachOpts)
+	volumeactions.Detach(d.Client, vol.ID, &volumeactions.DetachOpts{})
 	return volume.Response{}
 }
 
